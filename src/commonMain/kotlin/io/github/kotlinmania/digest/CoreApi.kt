@@ -101,14 +101,16 @@ interface CoreProxy {
 }
 
 /** Wrapper around a block-level core value for fixed-output algorithms. */
-class CoreWrapper<C>(
-    private val core: C,
-) : Update, FixedOutput, FixedOutputReset, Reset, OutputSizeUser, BlockSizeUser, HashMarker
+class CoreWrapper<C>(core: C) :
+    Update, FixedOutput, FixedOutputReset, Reset, OutputSizeUser, BlockSizeUser, HashMarker, CoreProxy
 where
     C : UpdateCore,
     C : FixedOutputCore,
     C : Reset {
-    private val buffer = Buffer<CoreWrapper<C>>(core.blockSize)
+    private val coreImpl: C = core
+    private val buffer = Buffer<CoreWrapper<C>>(coreImpl.blockSize)
+
+    override val core: Any get() = coreImpl
 
     companion object {
         /** Create a new wrapper from [core]. */
@@ -120,30 +122,35 @@ where
     }
 
     /** Decompose this wrapper into its core and buffer. */
-    fun decompose(): Pair<C, Buffer<CoreWrapper<C>>> = Pair(core, buffer)
+    fun decompose(): Pair<C, Buffer<CoreWrapper<C>>> = Pair(coreImpl, buffer)
 
-    override val outputSize: Int
-        get() = core.outputSize
-
-    override val blockSize: Int
-        get() = core.blockSize
+    override val outputSize: Int get() = coreImpl.outputSize
+    override val blockSize: Int get() = coreImpl.blockSize
 
     override fun update(data: ByteArray) {
-        buffer.digestBlocks(data) { block -> core.updateBlocks(listOf(block)) }
+        buffer.digestBlocks(data) { block -> coreImpl.updateBlocks(listOf(block)) }
     }
 
     override fun finalizeInto(out: Output<*>) {
-        core.finalizeFixedCore(buffer, out)
+        coreImpl.finalizeFixedCore(buffer, out)
     }
 
     override fun finalizeIntoReset(out: Output<*>) {
-        core.finalizeFixedCore(buffer, out)
+        coreImpl.finalizeFixedCore(buffer, out)
         reset()
     }
 
     override fun reset() {
         buffer.reset()
-        core.reset()
+        coreImpl.reset()
+    }
+
+    override fun toString(): String {
+        val fmt = Formatter()
+        (coreImpl as? AlgorithmName)?.writeAlgName(fmt)
+            ?: fmt.writeString(coreImpl::class.simpleName ?: "")
+        fmt.writeString(" { .. }")
+        return fmt.toString()
     }
 }
 
@@ -164,6 +171,39 @@ class XofReaderCoreWrapper(
             repeat(take) { buffer[offset++] = pending.removeFirst() }
             remaining -= take
         }
+    }
+}
+
+/** Wrapper around a block-level core value for extendable-output (XOF) algorithms. */
+class XofCoreWrapper<C>(core: C) :
+    Update, ExtendableOutput, ExtendableOutputReset, Reset, BlockSizeUser
+where
+    C : UpdateCore,
+    C : ExtendableOutputCore,
+    C : Reset {
+    private val coreImpl: C = core
+    private val buffer = Buffer<XofCoreWrapper<C>>(coreImpl.blockSize)
+
+    override val blockSize: Int get() = coreImpl.blockSize
+
+    override fun update(data: ByteArray) {
+        buffer.digestBlocks(data) { block -> coreImpl.updateBlocks(listOf(block)) }
+    }
+
+    override fun finalizeXof(): XofReaderCoreWrapper {
+        val readerCore = coreImpl.finalizeXofCore(buffer)
+        return XofReaderCoreWrapper(readerCore)
+    }
+
+    override fun finalizeXofReset(): XofReaderCoreWrapper {
+        val readerCore = coreImpl.finalizeXofCore(buffer)
+        reset()
+        return XofReaderCoreWrapper(readerCore)
+    }
+
+    override fun reset() {
+        buffer.reset()
+        coreImpl.reset()
     }
 }
 
