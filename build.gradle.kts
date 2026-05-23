@@ -266,7 +266,7 @@ kotlin {
 
     android {
         namespace = "io.github.kotlinmania.digest"
-        compileSdk = 34
+        compileSdk = 36
         minSdk = 24
         withHostTestBuilder {}.configure {}
         withDeviceTestBuilder {
