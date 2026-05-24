@@ -48,6 +48,16 @@ val androidSdkManager = projectAndroidSdkDir.resolve(
     },
 )
 val androidSdkInstallMarker = projectAndroidSdkDir.resolve(".install-complete")
+val requiredAndroidSdkPackageDirs = listOf(
+    projectAndroidSdkDir.resolve("platform-tools"),
+    projectAndroidSdkDir.resolve("platforms/android-$projectCompileSdk"),
+    projectAndroidSdkDir.resolve("build-tools/$projectAndroidBuildTools"),
+)
+
+fun isProjectAndroidSdkInstalled(): Boolean =
+    androidSdkInstallMarker.exists() &&
+        androidSdkManager.exists() &&
+        requiredAndroidSdkPackageDirs.all { it.exists() }
 
 fun writeAndroidLocalProperties() {
     val sdkDirPropertyValue = projectAndroidSdkDir.absolutePath.replace("\\", "/")
@@ -112,7 +122,7 @@ fun downloadAndroidCommandLineTools() {
 }
 
 fun installProjectAndroidSdk(execOperations: ExecOperations) {
-    if (androidSdkInstallMarker.exists() && androidSdkManager.exists()) {
+    if (isProjectAndroidSdkInstalled()) {
         writeAndroidLocalProperties()
         println("setup-android-sdk: SDK already installed at $projectAndroidSdkDir")
         return
@@ -256,7 +266,7 @@ kotlin {
 
     android {
         namespace = "io.github.kotlinmania.digest"
-        compileSdk = 34
+        compileSdk = 36
         minSdk = 24
         withHostTestBuilder {}.configure {}
         withDeviceTestBuilder {

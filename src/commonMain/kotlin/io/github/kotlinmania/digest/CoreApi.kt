@@ -100,40 +100,192 @@ interface CoreProxy {
     val core: Any
 }
 
-/** Block-level core instance used by wrappers around concrete algorithms. */
-interface CoreOf<D> : UpdateCore, FixedOutputCore, Reset, AlgorithmName {
-    /** Clone this core state. */
-    fun clone(): CoreOf<D>
-}
-
-/** Wrapper around a block-level core value. */
-class CoreWrapper<C>(
-    private val core: C,
-) : Update, FixedOutput, FixedOutputReset, Reset, OutputSizeUser, HashMarker
+/** Wrapper around a block-level core value for fixed-output algorithms. */
+class CoreWrapper<C>(core: C) :
+    Update, FixedOutput, FixedOutputReset, Reset, OutputSizeUser, BlockSizeUser, HashMarker, CoreProxy
 where
     C : UpdateCore,
     C : FixedOutputCore,
     C : Reset {
-    private val buffer = Buffer<CoreWrapper<C>>(core.blockSize)
+    private val coreImpl: C = core
+    private val buffer = Buffer<CoreWrapper<C>>(coreImpl.blockSize)
 
-    override val outputSize: Int
-        get() = core.outputSize
+    override val core: Any get() = coreImpl
+
+    companion object {
+        /** Create a new wrapper from [core]. */
+        fun <C> fromCore(core: C): CoreWrapper<C>
+        where
+            C : UpdateCore,
+            C : FixedOutputCore,
+            C : Reset = CoreWrapper(core)
+    }
+
+    /** Decompose this wrapper into its core and buffer. */
+    fun decompose(): Pair<C, Buffer<CoreWrapper<C>>> = Pair(coreImpl, buffer)
+
+    override val outputSize: Int get() = coreImpl.outputSize
+    override val blockSize: Int get() = coreImpl.blockSize
 
     override fun update(data: ByteArray) {
-        buffer.digestBlocks(data) { block -> core.updateBlocks(listOf(block)) }
+        buffer.digestBlocks(data) { block -> coreImpl.updateBlocks(listOf(block)) }
     }
 
     override fun finalizeInto(out: Output<*>) {
-        core.finalizeFixedCore(buffer, out)
+        coreImpl.finalizeFixedCore(buffer, out)
     }
 
     override fun finalizeIntoReset(out: Output<*>) {
-        core.finalizeFixedCore(buffer, out)
+        coreImpl.finalizeFixedCore(buffer, out)
         reset()
     }
 
     override fun reset() {
         buffer.reset()
-        core.reset()
+        coreImpl.reset()
+    }
+
+    override fun toString(): String {
+        val fmt = Formatter()
+        (coreImpl as? AlgorithmName)?.writeAlgName(fmt)
+            ?: fmt.writeString(coreImpl::class.simpleName ?: "")
+        fmt.writeString(" { .. }")
+        return fmt.toString()
+    }
+}
+
+/** Wrapper around [XofReaderCore] implementations. */
+class XofReaderCoreWrapper(
+    private val core: XofReaderCore,
+) : XofReader {
+    private val pending = ArrayDeque<Byte>()
+
+    override fun read(buffer: ByteArray) {
+        var offset = 0
+        var remaining = buffer.size
+        while (remaining > 0) {
+            if (pending.isEmpty()) {
+                for (b in core.readBlock()) pending.addLast(b)
+            }
+            val take = minOf(pending.size, remaining)
+            repeat(take) { buffer[offset++] = pending.removeFirst() }
+            remaining -= take
+        }
+    }
+}
+
+/** Wrapper around a block-level core value for extendable-output (XOF) algorithms. */
+class XofCoreWrapper<C>(core: C) :
+    Update, ExtendableOutput, ExtendableOutputReset, Reset, BlockSizeUser
+where
+    C : UpdateCore,
+    C : ExtendableOutputCore,
+    C : Reset {
+    private val coreImpl: C = core
+    private val buffer = Buffer<XofCoreWrapper<C>>(coreImpl.blockSize)
+
+    override val blockSize: Int get() = coreImpl.blockSize
+
+    override fun update(data: ByteArray) {
+        buffer.digestBlocks(data) { block -> coreImpl.updateBlocks(listOf(block)) }
+    }
+
+    override fun finalizeXof(): XofReaderCoreWrapper {
+        val readerCore = coreImpl.finalizeXofCore(buffer)
+        return XofReaderCoreWrapper(readerCore)
+    }
+
+    override fun finalizeXofReset(): XofReaderCoreWrapper {
+        val readerCore = coreImpl.finalizeXofCore(buffer)
+        reset()
+        return XofReaderCoreWrapper(readerCore)
+    }
+
+    override fun reset() {
+        buffer.reset()
+        coreImpl.reset()
+    }
+}
+
+/**
+ * Wrapper around [VariableOutputCore] with output size chosen at construction time.
+ *
+ * Implements [FixedOutputCore] by running the variable-output finalization and
+ * truncating the result to [outputSize] according to [VariableOutputCore.truncSide].
+ */
+class CtVariableCoreWrapper(
+    private val inner: VariableOutputCore,
+    override val outputSize: Int,
+) : UpdateCore, FixedOutputCore, BufferKindUser, OutputSizeUser, Reset {
+    override val blockSize: Int get() = inner.blockSize
+    override val bufferKind: BufferKind get() = inner.bufferKind
+
+    override fun updateBlocks(blocks: List<Block<*>>) {
+        inner.updateBlocks(blocks)
+    }
+
+    override fun finalizeFixedCore(buffer: Buffer<*>, out: Output<*>) {
+        val fullRes = ByteArray(inner.outputSize)
+        inner.finalizeVariableCore(buffer, fullRes)
+        val n = out.size
+        val m = fullRes.size - n
+        when (inner.truncSide) {
+            TruncSide.Left -> fullRes.copyInto(out, 0, 0, n)
+            TruncSide.Right -> fullRes.copyInto(out, 0, m, fullRes.size)
+        }
+    }
+
+    override fun reset() {
+        (inner as? Reset)?.reset()
+    }
+}
+
+/**
+ * Wrapper around [VariableOutputCore] with output size chosen at run time.
+ *
+ * Handles its own block buffer and implements the slice-based [VariableOutput]
+ * and [VariableOutputReset] traits.
+ */
+class RtVariableCoreWrapper(
+    private val core: VariableOutputCore,
+    private val outputSizeValue: Int,
+) : Update, VariableOutput, VariableOutputReset, Reset {
+    private val buffer = Buffer<RtVariableCoreWrapper>(core.blockSize)
+
+    override val maxOutputSize: Int get() = core.outputSize
+
+    override fun outputSize(): Int = outputSizeValue
+
+    override fun update(data: ByteArray) {
+        buffer.digestBlocks(data) { block -> core.updateBlocks(listOf(block)) }
+    }
+
+    private fun finalizeDirty(out: ByteArray): Result<Unit> {
+        if (out.size != outputSizeValue || out.size > maxOutputSize) {
+            return Result.failure(InvalidBufferSize())
+        }
+        val fullRes = ByteArray(core.outputSize)
+        core.finalizeVariableCore(buffer, fullRes)
+        val n = out.size
+        val m = fullRes.size - n
+        when (core.truncSide) {
+            TruncSide.Left -> fullRes.copyInto(out, 0, 0, n)
+            TruncSide.Right -> fullRes.copyInto(out, 0, m, fullRes.size)
+        }
+        return Result.success(Unit)
+    }
+
+    override fun finalizeVariable(out: ByteArray): Result<Unit> = finalizeDirty(out)
+
+    override fun finalizeVariableReset(out: ByteArray): Result<Unit> {
+        finalizeDirty(out).onFailure { return Result.failure(it) }
+        buffer.reset()
+        (core as? Reset)?.reset()
+        return Result.success(Unit)
+    }
+
+    override fun reset() {
+        buffer.reset()
+        (core as? Reset)?.reset()
     }
 }
