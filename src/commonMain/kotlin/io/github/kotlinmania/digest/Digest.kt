@@ -1,4 +1,4 @@
-// port-lint: source src/digest.rs
+// port-lint: source digest.rs
 package io.github.kotlinmania.digest
 
 import kotlin.reflect.KClass
@@ -11,6 +11,13 @@ interface DigestFactory<D> where D : Digest {
     /** Create a new hasher instance. */
     fun new(): D
 
+    /** Create a new hasher with [data] already processed. */
+    fun newWithPrefix(data: ByteArray): D {
+        val hasher = new()
+        hasher.update(data)
+        return hasher
+    }
+
     /** Output size in bytes. */
     val outputSize: Int
 
@@ -22,13 +29,13 @@ interface DigestFactory<D> where D : Digest {
  * Convenience wrapper trait covering cryptographic hash functions with fixed
  * output size.
  */
-interface Digest : Update, FixedOutput, FixedOutputReset, Reset, HashMarker, OutputSizeUser {
-    /** Create a new hasher with [data] already processed. */
-    fun newWithPrefix(data: ByteArray): Digest {
-        update(data)
-        return this
-    }
-
+interface Digest :
+    Update,
+    FixedOutput,
+    FixedOutputReset,
+    Reset,
+    HashMarker,
+    OutputSizeUser {
     /** Process input data in a chained manner. */
     fun chainUpdate(data: ByteArray): Digest {
         update(data)
@@ -52,6 +59,10 @@ interface Digest : Update, FixedOutput, FixedOutputReset, Reset, HashMarker, Out
         /** Create a hasher for [type]. */
         fun new(type: KClass<out Digest>): Digest = factory(type).new()
 
+        /** Create a hasher for [type] with [data] already processed. */
+        fun newWithPrefix(type: KClass<out Digest>, data: ByteArray): Digest =
+            factory(type).newWithPrefix(data)
+
         /** Return the output size for [type]. */
         fun outputSize(type: KClass<out Digest>): Int = factory(type).outputSize
 
@@ -60,20 +71,34 @@ interface Digest : Update, FixedOutput, FixedOutputReset, Reset, HashMarker, Out
 
         /** Compute a digest for [data] using [type]. */
         fun digest(type: KClass<out Digest>, data: ByteArray): Output<Digest> {
-            val hasher = new(type)
-            hasher.update(data)
+            val hasher = newWithPrefix(type, data)
             return hasher.finalizeFixed()
         }
 
-        private fun factory(type: KClass<out Digest>): DigestFactory<out Digest> {
-            return factories[type]
+        private fun factory(type: KClass<out Digest>): DigestFactory<out Digest> =
+            factories[type]
                 ?: throw IllegalStateException("No digest factory registered for ${type.simpleName}")
-        }
     }
 }
 
 /** Modification of [Digest] suitable for object-style dispatch. */
-interface DynDigest : Update, Reset {
+interface DynDigest :
+    Update,
+    Reset {
+    /** Retrieve result and reset this hasher. */
+    fun finalizeReset(): ByteArray {
+        val result = ByteArray(outputSize())
+        finalizeIntoReset(result).getOrThrow()
+        return result
+    }
+
+    /** Retrieve result using object-style dispatch. */
+    fun finalize(): ByteArray {
+        val result = ByteArray(outputSize())
+        finalizeIntoReset(result).getOrThrow()
+        return result
+    }
+
     /** Write the result into [buf]. */
     fun finalizeInto(buf: ByteArray): Result<Unit>
 

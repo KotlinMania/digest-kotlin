@@ -1,4 +1,4 @@
-// port-lint: source src/dev/variable.rs
+// port-lint: source dev/variable.rs
 package io.github.kotlinmania.digest.dev
 
 import io.github.kotlinmania.digest.VariableOutput

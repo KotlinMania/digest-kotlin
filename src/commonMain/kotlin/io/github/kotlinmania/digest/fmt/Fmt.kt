@@ -1,4 +1,3 @@
-// port-lint: ignore - Kotlin formatting helper for translated Rust fmt APIs.
 package io.github.kotlinmania.digest.fmt
 
 /** Result returned by formatting helpers. */

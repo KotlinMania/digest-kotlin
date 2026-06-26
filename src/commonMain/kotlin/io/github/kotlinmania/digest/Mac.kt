@@ -1,4 +1,4 @@
-// port-lint: source src/mac.rs
+// port-lint: source mac.rs
 package io.github.kotlinmania.digest
 
 /** Marker trait for Message Authentication algorithms. */
@@ -32,7 +32,7 @@ interface Mac : OutputSizeUser {
 
     /** Check whether [tag] is correct for the processed input. */
     fun verify(tag: Output<*>): Result<Unit> =
-        if (finalize().intoBytes().contentEquals(tag)) {
+        if (constantTimeEquals(finalize().intoBytes(), tag)) {
             Result.success(Unit)
         } else {
             Result.failure(MacError())
@@ -40,22 +40,32 @@ interface Mac : OutputSizeUser {
 
     /** Check whether [tag] is correct and reset the instance. */
     fun verifyReset(tag: Output<*>): Result<Unit> =
-        if (finalizeReset().intoBytes().contentEquals(tag)) {
+        if (constantTimeEquals(finalizeReset().intoBytes(), tag)) {
             Result.success(Unit)
         } else {
             Result.failure(MacError())
         }
 
     /** Check tag correctness using all bytes of the calculated tag. */
-    fun verifySlice(tag: ByteArray): Result<Unit> = verify(tag)
+    fun verifySlice(tag: ByteArray): Result<Unit> =
+        if (tag.size == outputSize) {
+            verify(tag)
+        } else {
+            Result.failure(MacError())
+        }
 
     /** Check tag correctness using all bytes of the calculated tag and reset. */
-    fun verifySliceReset(tag: ByteArray): Result<Unit> = verifyReset(tag)
+    fun verifySliceReset(tag: ByteArray): Result<Unit> =
+        if (tag.size == outputSize) {
+            verifyReset(tag)
+        } else {
+            Result.failure(MacError())
+        }
 
     /** Check truncated tag correctness using left-side bytes. */
     fun verifyTruncatedLeft(tag: ByteArray): Result<Unit> {
         val expected = finalize().intoBytes()
-        return if (tag.isNotEmpty() && tag.size <= expected.size && expected.copyOf(tag.size).contentEquals(tag)) {
+        return if (tag.isNotEmpty() && tag.size <= expected.size && constantTimeEquals(expected, 0, tag)) {
             Result.success(Unit)
         } else {
             Result.failure(MacError())
@@ -66,7 +76,7 @@ interface Mac : OutputSizeUser {
     fun verifyTruncatedRight(tag: ByteArray): Result<Unit> {
         val expected = finalize().intoBytes()
         val offset = expected.size - tag.size
-        return if (tag.isNotEmpty() && offset >= 0 && expected.copyOfRange(offset, expected.size).contentEquals(tag)) {
+        return if (tag.isNotEmpty() && offset >= 0 && constantTimeEquals(expected, offset, tag)) {
             Result.success(Unit)
         } else {
             Result.failure(MacError())
@@ -80,14 +90,46 @@ class CtOutput<T : OutputSizeUser>(
 ) {
     private val bytes: Output<T> = bytes.copyOf()
 
+    companion object {
+        /** Create a new constant-time output value. */
+        fun <T : OutputSizeUser> new(bytes: Output<T>): CtOutput<T> = CtOutput(bytes)
+
+        /** Create a constant-time output value from existing output bytes. */
+        fun <T : OutputSizeUser> from(bytes: Output<T>): CtOutput<T> = CtOutput(bytes)
+    }
+
     /** Get the inner output array this type wraps. */
     fun intoBytes(): Output<T> = bytes.copyOf()
 
+    /** Compare two output values without data-dependent early exit. */
+    fun ctEq(other: CtOutput<T>): Boolean = constantTimeEquals(bytes, other.bytes)
+
     override fun equals(other: Any?): Boolean =
-        other is CtOutput<*> && bytes.contentEquals(other.intoBytes())
+        other is CtOutput<*> && constantTimeEquals(bytes, other.bytes)
 
     override fun hashCode(): Int = bytes.contentHashCode()
 }
 
 /** Error for when MAC output is not equal to the expected value. */
 class MacError : IllegalArgumentException("MAC tag mismatch")
+
+private fun constantTimeEquals(left: ByteArray, right: ByteArray): Boolean {
+    var difference = left.size xor right.size
+    val maxSize = maxOf(left.size, right.size)
+    for (index in 0 until maxSize) {
+        val leftByte = if (index < left.size) left[index].toInt() and 0xff else 0
+        val rightByte = if (index < right.size) right[index].toInt() and 0xff else 0
+        difference = difference or (leftByte xor rightByte)
+    }
+    return difference == 0
+}
+
+private fun constantTimeEquals(left: ByteArray, leftOffset: Int, right: ByteArray): Boolean {
+    var difference = 0
+    for (index in right.indices) {
+        val leftByte = left[leftOffset + index].toInt() and 0xff
+        val rightByte = right[index].toInt() and 0xff
+        difference = difference or (leftByte xor rightByte)
+    }
+    return difference == 0
+}

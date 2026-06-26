@@ -1,4 +1,4 @@
-// port-lint: source src/dev/fixed.rs
+// port-lint: source dev/fixed.rs
 package io.github.kotlinmania.digest.dev
 
 import io.github.kotlinmania.digest.FixedOutput
