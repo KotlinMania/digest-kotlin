@@ -3,6 +3,7 @@ package io.github.kotlinmania.digest.coreapi
 
 import io.github.kotlinmania.digest.Block
 import io.github.kotlinmania.digest.BlockSizeUser
+import io.github.kotlinmania.digest.InvalidOutputSize
 import io.github.kotlinmania.digest.Output
 import io.github.kotlinmania.digest.OutputSizeUser
 import io.github.kotlinmania.digest.fmt.FmtResult
@@ -163,6 +164,9 @@ interface VariableOutputCore :
     BufferKindUser {
     /** Side which should be used in a truncated result. */
     val truncSide: TruncSide
+
+    /** Initialize hasher state for a requested output size. */
+    fun new(outputSize: Int): Result<VariableOutputCore> = Result.failure(InvalidOutputSize())
 
     /** Finalize state and write the full hashing result into [out]. */
     fun finalizeVariableCore(buffer: Buffer<*>, out: Output<*>)

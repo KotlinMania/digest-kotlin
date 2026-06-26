@@ -2,6 +2,7 @@
 package io.github.kotlinmania.digest.coreapi
 
 import io.github.kotlinmania.digest.InvalidBufferSize
+import io.github.kotlinmania.digest.InvalidOutputSize
 import io.github.kotlinmania.digest.Reset
 import io.github.kotlinmania.digest.Update
 import io.github.kotlinmania.digest.VariableOutput
@@ -16,6 +17,17 @@ class RtVariableCoreWrapper(
     VariableOutputReset,
     Reset {
     private val buffer = Buffer<RtVariableCoreWrapper>(core.blockSize)
+
+    companion object {
+        /** Create a runtime-size wrapper using [prototype]'s variable-output constructor. */
+        fun new(prototype: VariableOutputCore, outputSize: Int): Result<RtVariableCoreWrapper> =
+            prototype
+                .new(outputSize)
+                .fold(
+                    onSuccess = { Result.success(RtVariableCoreWrapper(it, outputSize)) },
+                    onFailure = { Result.failure(if (it is InvalidOutputSize) it else InvalidOutputSize()) },
+                )
+    }
 
     override val maxOutputSize: Int get() = core.outputSize
 

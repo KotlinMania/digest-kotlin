@@ -2,6 +2,7 @@
 package io.github.kotlinmania.digest.coreapi
 
 import io.github.kotlinmania.digest.Block
+import io.github.kotlinmania.digest.InvalidOutputSize
 import io.github.kotlinmania.digest.Output
 import io.github.kotlinmania.digest.OutputSizeUser
 import io.github.kotlinmania.digest.Reset
@@ -11,7 +12,7 @@ data object NoOid
 
 /** Wrapper around [VariableOutputCore] which selects output size at construction time. */
 class CtVariableCoreWrapper(
-    private val inner: VariableOutputCore,
+    private var inner: VariableOutputCore,
     override val outputSize: Int,
 ) : UpdateCore,
     FixedOutputCore,
@@ -37,6 +38,15 @@ class CtVariableCoreWrapper(
     }
 
     override fun reset() {
-        (inner as? Reset)?.reset()
+        inner
+            .new(outputSize)
+            .onSuccess { inner = it }
+            .onFailure {
+                if (it is InvalidOutputSize) {
+                    (inner as? Reset)?.reset()
+                } else {
+                    throw it
+                }
+            }
     }
 }

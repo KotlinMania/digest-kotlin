@@ -90,11 +90,22 @@ class CtOutput<T : OutputSizeUser>(
 ) {
     private val bytes: Output<T> = bytes.copyOf()
 
+    companion object {
+        /** Create a new constant-time output value. */
+        fun <T : OutputSizeUser> new(bytes: Output<T>): CtOutput<T> = CtOutput(bytes)
+
+        /** Create a constant-time output value from existing output bytes. */
+        fun <T : OutputSizeUser> from(bytes: Output<T>): CtOutput<T> = CtOutput(bytes)
+    }
+
     /** Get the inner output array this type wraps. */
     fun intoBytes(): Output<T> = bytes.copyOf()
 
+    /** Compare two output values without data-dependent early exit. */
+    fun ctEq(other: CtOutput<T>): Boolean = constantTimeEquals(bytes, other.bytes)
+
     override fun equals(other: Any?): Boolean =
-        other is CtOutput<*> && constantTimeEquals(bytes, other.intoBytes())
+        other is CtOutput<*> && constantTimeEquals(bytes, other.bytes)
 
     override fun hashCode(): Int = bytes.contentHashCode()
 }

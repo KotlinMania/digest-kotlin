@@ -42,6 +42,16 @@ class DigestApiTest {
     }
 
     @Test
+    fun ctOutputFactoriesAndCtEqUseBytes() {
+        val fromNew = CtOutput.new<SampleSize>(byteArrayOf(1, 2, 3))
+        val fromOutput = CtOutput.from<SampleSize>(byteArrayOf(1, 2, 3))
+        val different = CtOutput.from<SampleSize>(byteArrayOf(1, 2, 4))
+
+        assertTrue(fromNew.ctEq(fromOutput))
+        assertTrue(!fromNew.ctEq(different))
+    }
+
+    @Test
     fun bufferEmitsCompleteBlocks() {
         val blocks = mutableListOf<ByteArray>()
         val buffer = Buffer<SampleSize>(2)
@@ -184,6 +194,16 @@ class DigestApiTest {
     }
 
     @Test
+    fun ctVariableCoreWrapperResetRecreatesInnerCore() {
+        val core = CountingVariableCore(byteArrayOf(1, 2, 3, 4), TruncSide.Left)
+        val wrapper = CtVariableCoreWrapper(core, 2)
+
+        wrapper.reset()
+
+        assertEquals(1, core.newCalls)
+    }
+
+    @Test
     fun bufferKindEagerAndLazyAreDistinct() {
         val eager: BufferKind = Eager
         val lazy: BufferKind = Lazy
@@ -270,6 +290,14 @@ class DigestApiTest {
     fun variableOutputFinalizeBoxedReturnsConfiguredBytes() {
         assertContentEquals(byteArrayOf(0x66, 0x77), StaticVariable(byteArrayOf(0x66, 0x77)).finalizeBoxed())
         assertContentEquals(byteArrayOf(0x66, 0x77), StaticVariable(byteArrayOf(0x66, 0x77)).finalizeBoxedReset())
+    }
+
+    @Test
+    fun dynDigestFinalizeHelpersAllocateOutput() {
+        val dyn = StaticDynDigest(byteArrayOf(0x12, 0x34))
+
+        assertContentEquals(byteArrayOf(0x12, 0x34), dyn.finalizeReset())
+        assertContentEquals(byteArrayOf(0x12, 0x34), dyn.finalize())
     }
 
     @Test
@@ -376,7 +404,26 @@ class DigestApiTest {
             output.copyInto(out)
         }
 
+        override fun new(outputSize: Int): Result<VariableOutputCore> =
+            if (outputSize in 1..output.size) {
+                Result.success(StaticVariableCore(output.copyOf(), truncSide))
+            } else {
+                Result.failure(InvalidOutputSize())
+            }
+
         override fun reset() = Unit
+    }
+
+    private class CountingVariableCore(
+        output: ByteArray,
+        truncSide: TruncSide,
+    ) : VariableOutputCore by StaticVariableCore(output, truncSide) {
+        var newCalls = 0
+
+        override fun new(outputSize: Int): Result<VariableOutputCore> {
+            newCalls += 1
+            return StaticVariableCore(byteArrayOf(1, 2, 3, 4), TruncSide.Left).new(outputSize)
+        }
     }
 
     private class StaticHasher(
@@ -451,6 +498,26 @@ class DigestApiTest {
         override fun reset() = Unit
 
         fun clone(): StaticVariable = StaticVariable(result.copyOf())
+    }
+
+    private class StaticDynDigest(
+        private val result: ByteArray,
+    ) : DynDigest {
+        override fun update(data: ByteArray) = Unit
+
+        override fun finalizeInto(buf: ByteArray): Result<Unit> {
+            if (buf.size != result.size) return Result.failure(InvalidBufferSize())
+            result.copyInto(buf)
+            return Result.success(Unit)
+        }
+
+        override fun finalizeIntoReset(out: ByteArray): Result<Unit> = finalizeInto(out)
+
+        override fun reset() = Unit
+
+        override fun outputSize(): Int = result.size
+
+        override fun boxClone(): DynDigest = StaticDynDigest(result.copyOf())
     }
 
     private class StaticXof : ExtendableOutputReset {

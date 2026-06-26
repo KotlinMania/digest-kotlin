@@ -85,6 +85,20 @@ interface Digest :
 interface DynDigest :
     Update,
     Reset {
+    /** Retrieve result and reset this hasher. */
+    fun finalizeReset(): ByteArray {
+        val result = ByteArray(outputSize())
+        finalizeIntoReset(result).getOrThrow()
+        return result
+    }
+
+    /** Retrieve result using object-style dispatch. */
+    fun finalize(): ByteArray {
+        val result = ByteArray(outputSize())
+        finalizeIntoReset(result).getOrThrow()
+        return result
+    }
+
     /** Write the result into [buf]. */
     fun finalizeInto(buf: ByteArray): Result<Unit>
 

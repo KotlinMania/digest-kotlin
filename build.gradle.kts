@@ -1,5 +1,6 @@
 import org.gradle.api.GradleException
 import org.gradle.api.artifacts.VersionCatalogsExtension
+import org.gradle.api.publish.maven.MavenPublication
 import org.gradle.api.tasks.testing.AbstractTestTask
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.gradle.api.tasks.testing.logging.TestLogEvent
@@ -19,19 +20,25 @@ import org.jetbrains.kotlin.gradle.targets.wasm.nodejs.WasmNodeJsEnvSpec
 import org.jetbrains.kotlin.gradle.targets.wasm.yarn.WasmYarnRootEnvSpec
 import java.io.ByteArrayInputStream
 import java.net.URI
+import java.net.http.HttpClient
+import java.net.http.HttpRequest
+import java.net.http.HttpResponse
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.util.Base64
+import java.util.UUID
 import java.util.zip.ZipInputStream
 
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.android.kmp)
-    alias(libs.plugins.vanniktech)
     alias(libs.plugins.detekt)
     alias(libs.plugins.ktlint)
     alias(libs.plugins.kotlinx.benchmark)
     alias(libs.plugins.kotlin.allopen)
+    `maven-publish`
+    signing
 }
 
 group = providers.gradleProperty("project.group").getOrElse("io.github.kotlinmania")
@@ -425,10 +432,8 @@ kotlin {
     linuxArm64 { configureBenchmarkCompilation() }
     mingwX64 { configureBenchmarkCompilation() }
 
-    // Android NDK — always built (full target surface, no opt-in gate).
-    androidNativeArm32 { configureBenchmarkCompilation() }
+    // Android NDK — always built for supported 64-bit targets.
     androidNativeArm64 { configureBenchmarkCompilation() }
-    androidNativeX86 { configureBenchmarkCompilation() }
     androidNativeX64 { configureBenchmarkCompilation() }
 
     // Web
@@ -662,42 +667,151 @@ rootProject.extensions.configure<NodeJsRootExtension>("kotlinNodeJs") {
 }
 
 // ============================================================================
-// Maven Central publishing
+// Maven Central publishing — Central Portal, first-party + bespoke upload
+// ----------------------------------------------------------------------------
+// OSSRH was sunset 2025-06-30; the Central Portal is the only path. Sonatype
+// ships no first-party Gradle plugin, so we use Gradle's own maven-publish +
+// signing (KGP populates the KMP publications) and upload the deployment
+// bundle to the Portal API ourselves.
+//
+// Flow: publish all KMP publications into a local staging Maven layout ->
+// zip it -> POST the zip to the Portal upload endpoint with a Bearer token.
 // ============================================================================
-mavenPublishing {
-    publishToMavenCentral()
-    if (project.findProperty("RELEASE_SIGNING_ENABLED") != "false") {
-        signAllPublications()
+val publishProjectName = providers.gradleProperty("project.name").getOrElse("unnamed-project")
+
+// Central requires a Javadoc jar per publication; KMP produces none, so attach
+// an empty one to every Maven publication.
+val emptyJavadocJar by tasks.registering(Jar::class) {
+    archiveClassifier.set("javadoc")
+}
+
+publishing {
+    publications.withType<MavenPublication>().configureEach {
+        artifact(emptyJavadocJar)
+        pom {
+            name.set(publishProjectName)
+            description.set(providers.gradleProperty("project.pom.description").getOrElse(""))
+            inceptionYear.set("2026")
+            url.set("https://github.com/KotlinMania/$publishProjectName")
+            licenses {
+                license {
+                    name.set(providers.gradleProperty("project.pom.licenseName").getOrElse("MIT"))
+                    url.set(
+                        providers
+                            .gradleProperty("project.pom.licenseUrl")
+                            .getOrElse("https://opensource.org/licenses/MIT"),
+                    )
+                    distribution.set("repo")
+                }
+            }
+            developers {
+                developer {
+                    id.set("sydneyrenee")
+                    name.set("Sydney Renee")
+                    email.set("sydney@solace.ofharmony.ai")
+                    url.set("https://github.com/sydneyrenee")
+                }
+            }
+            scm {
+                url.set("https://github.com/KotlinMania/$publishProjectName")
+                connection.set("scm:git:git://github.com/KotlinMania/$publishProjectName.git")
+                developerConnection.set("scm:git:ssh://github.com/KotlinMania/$publishProjectName.git")
+            }
+        }
     }
-    val projectName = providers.gradleProperty("project.name").getOrElse("unnamed-project")
-    coordinates(group.toString(), projectName, version.toString())
-    pom {
-        name.set(projectName)
-        description.set(providers.gradleProperty("project.pom.description").getOrElse(""))
-        inceptionYear.set("2026")
-        url.set("https://github.com/KotlinMania/$projectName")
-        licenses {
-            license {
-                name.set(providers.gradleProperty("project.pom.licenseName").getOrElse("MIT"))
-                url.set(
-                    providers.gradleProperty("project.pom.licenseUrl").getOrElse("https://opensource.org/licenses/MIT"),
-                )
-                distribution.set("repo")
-            }
+
+    // Stage into a local Maven layout that becomes the Portal deployment bundle.
+    // maven-publish auto-generates the md5/sha1/sha256/sha512 checksums Central
+    // requires; signing (below) adds the .asc signatures.
+    repositories {
+        maven {
+            name = "centralPortalStaging"
+            url = uri(layout.buildDirectory.dir("staging-deploy"))
         }
-        developers {
-            developer {
-                id.set("sydneyrenee")
-                name.set("Sydney Renee")
-                email.set("sydney@solace.ofharmony.ai")
-                url.set("https://github.com/sydneyrenee")
-            }
+    }
+}
+
+signing {
+    val signingKey = providers.gradleProperty("signingInMemoryKey").orNull
+    val signingKeyId = providers.gradleProperty("signingInMemoryKeyId").orNull
+    val signingPassword = providers.gradleProperty("signingInMemoryKeyPassword").orNull
+    val signingEnabled = project.findProperty("RELEASE_SIGNING_ENABLED") != "false" && signingKey != null
+    if (signingEnabled) {
+        useInMemoryPgpKeys(signingKeyId, signingKey, signingPassword)
+        sign(publishing.publications)
+    }
+}
+
+// Zip the staged Maven layout into a single Central Portal deployment bundle.
+val centralPortalBundle by tasks.registering(Zip::class) {
+    group = "publishing"
+    description = "Bundles the staged Maven artifacts into a Central Portal deployment zip."
+    dependsOn("publishAllPublicationsToCentralPortalStagingRepository")
+    from(layout.buildDirectory.dir("staging-deploy"))
+    archiveFileName.set("$publishProjectName-$version-bundle.zip")
+    destinationDirectory.set(layout.buildDirectory.dir("central-portal"))
+}
+
+// Upload the bundle to the Sonatype Central Portal Publisher API.
+// publishingType: USER_MANAGED (default, safe — validates then waits for a
+// manual release in the Portal UI) or AUTOMATIC (publishes after validation).
+val publishToCentralPortal by tasks.registering {
+    group = "publishing"
+    description = "Uploads the deployment bundle to the Sonatype Central Portal."
+    dependsOn(centralPortalBundle)
+    doLast {
+        val user =
+            providers.gradleProperty("mavenCentralUsername").orNull
+                ?: error("mavenCentralUsername is required to publish to the Central Portal.")
+        val password =
+            providers.gradleProperty("mavenCentralPassword").orNull
+                ?: error("mavenCentralPassword is required to publish to the Central Portal.")
+        val publishingType = providers.gradleProperty("centralPublishingType").getOrElse("USER_MANAGED")
+        val token = Base64.getEncoder().encodeToString("$user:$password".toByteArray(Charsets.UTF_8))
+
+        val bundle =
+            centralPortalBundle
+                .get()
+                .archiveFile
+                .get()
+                .asFile
+        require(bundle.exists()) { "Deployment bundle not found: $bundle" }
+
+        val boundary = "CentralPortalBoundary" + UUID.randomUUID().toString().replace("-", "")
+        val crlf = "\r\n"
+        val preamble =
+            (
+                "--$boundary$crlf" +
+                    "Content-Disposition: form-data; name=\"bundle\"; filename=\"${bundle.name}\"$crlf" +
+                    "Content-Type: application/octet-stream$crlf$crlf"
+            ).toByteArray(Charsets.UTF_8)
+        val epilogue = "$crlf--$boundary--$crlf".toByteArray(Charsets.UTF_8)
+        val body = preamble + bundle.readBytes() + epilogue
+
+        val deploymentName = "$publishProjectName-$version"
+        val uploadUri =
+            URI(
+                "https://central.sonatype.com/api/v1/publisher/upload" +
+                    "?name=$deploymentName&publishingType=$publishingType",
+            )
+        val request =
+            HttpRequest
+                .newBuilder()
+                .uri(uploadUri)
+                .header("Authorization", "Bearer $token")
+                .header("Content-Type", "multipart/form-data; boundary=$boundary")
+                .POST(HttpRequest.BodyPublishers.ofByteArray(body))
+                .build()
+
+        val client = HttpClient.newHttpClient()
+        val response = client.send(request, HttpResponse.BodyHandlers.ofString())
+        if (response.statusCode() !in 200..299) {
+            error("Central Portal upload failed: HTTP ${response.statusCode()} — ${response.body()}")
         }
-        scm {
-            url.set("https://github.com/KotlinMania/$projectName")
-            connection.set("scm:git:git://github.com/KotlinMania/$projectName.git")
-            developerConnection.set("scm:git:ssh://github.com/KotlinMania/$projectName.git")
-        }
+        logger.lifecycle(
+            "Central Portal upload accepted (deployment id: ${response.body()}). " +
+                "publishingType=$publishingType.",
+        )
     }
 }
 
@@ -815,17 +929,15 @@ tasks.register("swiftExportSmokeTest") {
 // `build` aggregate
 // ----------------------------------------------------------------------------
 // Every configured native target, unconditionally. This is the audit contract —
-// it must mirror the kotlin { } target block exactly. watchosArm32 is the only
-// retired native target (see §5.5.1); everything else MUST build.
+// it must mirror the kotlin { } target block exactly. Retired native targets
+// stay out of both lists; everything configured here MUST build.
 // Do not add a dynamic tasks.matching fallback here: copied templates must make
 // the target surface explicit so missing declarations fail loudly in review.
 // ============================================================================
 val nativeTargetNames =
     listOf(
-        "androidNativeArm32",
         "androidNativeArm64",
         "androidNativeX64",
-        "androidNativeX86",
         "iosArm64",
         "iosSimulatorArm64",
         "iosX64",
