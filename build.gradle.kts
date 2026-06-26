@@ -1,10 +1,12 @@
 import org.gradle.api.GradleException
 import org.gradle.api.artifacts.VersionCatalogsExtension
 import org.gradle.api.publish.maven.MavenPublication
+import org.gradle.api.publish.maven.tasks.PublishToMavenRepository
 import org.gradle.api.tasks.testing.AbstractTestTask
 import org.gradle.api.tasks.testing.logging.TestExceptionFormat
 import org.gradle.api.tasks.testing.logging.TestLogEvent
 import org.gradle.kotlin.dsl.support.serviceOf
+import org.gradle.plugins.signing.Sign
 import org.gradle.process.ExecOperations
 import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
@@ -742,11 +744,20 @@ signing {
     }
 }
 
+val centralPortalPublishTasks =
+    tasks.withType<PublishToMavenRepository>().matching {
+        it.name.endsWith("ToCentralPortalStagingRepository")
+    }
+
+centralPortalPublishTasks.configureEach {
+    dependsOn(tasks.withType<Sign>())
+}
+
 // Zip the staged Maven layout into a single Central Portal deployment bundle.
 val centralPortalBundle by tasks.registering(Zip::class) {
     group = "publishing"
     description = "Bundles the staged Maven artifacts into a Central Portal deployment zip."
-    dependsOn("publishAllPublicationsToCentralPortalStagingRepository")
+    dependsOn(centralPortalPublishTasks)
     from(layout.buildDirectory.dir("staging-deploy"))
     archiveFileName.set("$publishProjectName-$version-bundle.zip")
     destinationDirectory.set(layout.buildDirectory.dir("central-portal"))
