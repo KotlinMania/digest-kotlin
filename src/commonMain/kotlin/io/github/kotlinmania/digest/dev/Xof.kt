@@ -1,4 +1,4 @@
-// port-lint: source src/dev/xof.rs
+// port-lint: source dev/xof.rs
 package io.github.kotlinmania.digest.dev
 
 import io.github.kotlinmania.digest.ExtendableOutputReset

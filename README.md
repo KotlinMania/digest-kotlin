@@ -7,7 +7,15 @@ crate. The initial target is `digest 0.10.7`, the version resolved by
 This repo was started to provide the real sibling dependency that
 `hmac-kotlin` imports as `io.github.kotlinmania.digest.*`.
 
-## Build
+## Installation
+
+```kotlin
+dependencies {
+    implementation("io.github.kotlinmania:digest-kotlin:0.1.0")
+}
+```
+
+## Building
 
 ```bash
 ./gradlew setupAndroidSdk --no-daemon --console=plain --no-configuration-cache

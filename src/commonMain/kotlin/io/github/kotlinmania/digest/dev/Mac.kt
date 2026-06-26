@@ -1,4 +1,4 @@
-// port-lint: source src/dev/mac.rs
+// port-lint: source dev/mac.rs
 package io.github.kotlinmania.digest.dev
 
 import io.github.kotlinmania.digest.Mac
@@ -24,11 +24,12 @@ fun macTest(
     mac.update(input)
     val result = mac.finalize().intoBytes()
     val n = tag.size
-    val resultBytes = when (truncSide) {
-        "left" -> result.copyOfRange(0, n)
-        "right" -> result.copyOfRange(result.size - n, result.size)
-        else -> result
-    }
+    val resultBytes =
+        when (truncSide) {
+            "left" -> result.copyOfRange(0, n)
+            "right" -> result.copyOfRange(result.size - n, result.size)
+            else -> result
+        }
     if (!resultBytes.contentEquals(tag)) return "whole message"
 
     for (chunkSize in 1 until minOf(64, input.size)) {
@@ -39,11 +40,12 @@ fun macTest(
             m.update(input.copyOfRange(offset, end))
             offset = end
         }
-        val res = when (truncSide) {
-            "left" -> m.verifyTruncatedLeft(tag)
-            "right" -> m.verifyTruncatedRight(tag)
-            else -> m.verifySlice(tag)
-        }
+        val res =
+            when (truncSide) {
+                "left" -> m.verifyTruncatedLeft(tag)
+                "right" -> m.verifyTruncatedRight(tag)
+                else -> m.verifySlice(tag)
+            }
         if (res.isFailure) return "chunked message"
     }
     return null
@@ -68,19 +70,21 @@ fun resettableMacTest(
     mac.update(input)
     val result = mac.finalizeReset().intoBytes()
     val n = tag.size
-    val resultBytes = when (truncSide) {
-        "left" -> result.copyOfRange(0, n)
-        "right" -> result.copyOfRange(result.size - n, result.size)
-        else -> result
-    }
+    val resultBytes =
+        when (truncSide) {
+            "left" -> result.copyOfRange(0, n)
+            "right" -> result.copyOfRange(result.size - n, result.size)
+            else -> result
+        }
     if (!resultBytes.contentEquals(tag)) return "whole message"
 
     mac.update(input)
-    val afterReset = when (truncSide) {
-        "left" -> mac.verifyTruncatedLeft(tag)
-        "right" -> mac.verifyTruncatedRight(tag)
-        else -> mac.verifySlice(tag)
-    }
+    val afterReset =
+        when (truncSide) {
+            "left" -> mac.verifyTruncatedLeft(tag)
+            "right" -> mac.verifyTruncatedRight(tag)
+            else -> mac.verifySlice(tag)
+        }
     if (afterReset.isFailure) return "after reset"
 
     for (chunkSize in 1 until minOf(64, input.size)) {
@@ -91,11 +95,12 @@ fun resettableMacTest(
             m.update(input.copyOfRange(offset, end))
             offset = end
         }
-        val res = when (truncSide) {
-            "left" -> m.verifyTruncatedLeft(tag)
-            "right" -> m.verifyTruncatedRight(tag)
-            else -> m.verifySlice(tag)
-        }
+        val res =
+            when (truncSide) {
+                "left" -> m.verifyTruncatedLeft(tag)
+                "right" -> m.verifyTruncatedRight(tag)
+                else -> m.verifySlice(tag)
+            }
         if (res.isFailure) return "chunked message"
     }
     return null

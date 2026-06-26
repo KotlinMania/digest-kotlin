@@ -1,4 +1,4 @@
-// port-lint: source src/lib.rs
+// port-lint: source lib.rs
 package io.github.kotlinmania.digest
 
 /**
@@ -27,6 +27,12 @@ fun ByteArray.asSlice(): ByteArray = this
 interface Update {
     /** Update state using the provided data. */
     fun update(data: ByteArray)
+
+    /** Digest input data in a chained manner. */
+    fun chain(data: ByteArray): Update {
+        update(data)
+        return this
+    }
 }
 
 /** Types which can reset themselves to their initial state. */
@@ -63,7 +69,9 @@ interface KeyInit<S> {
 }
 
 /** Trait for hash functions with fixed-size output. */
-interface FixedOutput : Update, OutputSizeUser {
+interface FixedOutput :
+    Update,
+    OutputSizeUser {
     /** Consume this value and write the result into the provided output. */
     fun finalizeInto(out: Output<*>)
 
@@ -76,7 +84,9 @@ interface FixedOutput : Update, OutputSizeUser {
 }
 
 /** Trait for hash functions with fixed-size output able to reset themselves. */
-interface FixedOutputReset : FixedOutput, Reset {
+interface FixedOutputReset :
+    FixedOutput,
+    Reset {
     /** Write the result into the provided output and reset state. */
     fun finalizeIntoReset(out: Output<*>)
 
@@ -92,6 +102,13 @@ interface FixedOutputReset : FixedOutput, Reset {
 interface XofReader {
     /** Read output into [buffer]. */
     fun read(buffer: ByteArray)
+
+    /** Read output into a byte array of the specified size. */
+    fun readBoxed(n: Int): ByteArray {
+        val buf = ByteArray(n)
+        read(buf)
+        return buf
+    }
 }
 
 /** Trait for hash functions with extendable output. */
@@ -103,16 +120,41 @@ interface ExtendableOutput : Update {
     fun finalizeXofInto(out: ByteArray) {
         finalizeXof().read(out)
     }
+
+    /** Retrieve result into a byte array of the specified size. */
+    fun finalizeBoxed(outputSize: Int): ByteArray {
+        val buf = ByteArray(outputSize)
+        finalizeXof().read(buf)
+        return buf
+    }
+
+    companion object {
+        /** Compute hash of [input] and write it into [output]. */
+        fun digestXof(input: ByteArray, output: ByteArray, create: () -> ExtendableOutput) {
+            val hasher = create()
+            hasher.update(input)
+            hasher.finalizeXof().read(output)
+        }
+    }
 }
 
 /** Trait for hash functions with extendable output able to reset themselves. */
-interface ExtendableOutputReset : ExtendableOutput, Reset {
+interface ExtendableOutputReset :
+    ExtendableOutput,
+    Reset {
     /** Retrieve a XOF reader and reset the hasher state. */
     fun finalizeXofReset(): XofReader
 
     /** Finalize XOF output into [out] and reset the hasher state. */
     fun finalizeXofResetInto(out: ByteArray) {
         finalizeXofReset().read(out)
+    }
+
+    /** Retrieve result into a byte array of the specified size and reset state. */
+    fun finalizeBoxedReset(outputSize: Int): ByteArray {
+        val buf = ByteArray(outputSize)
+        finalizeXofReset().read(buf)
+        return buf
     }
 }
 
@@ -126,12 +168,49 @@ interface VariableOutput : Update {
 
     /** Write the result into [out]. */
     fun finalizeVariable(out: ByteArray): Result<Unit>
+
+    /** Retrieve result into a byte array and consume the hasher state. */
+    fun finalizeBoxed(): ByteArray {
+        val buf = ByteArray(outputSize())
+        finalizeVariable(buf).getOrThrow()
+        return buf
+    }
+
+    companion object {
+        /** Compute hash of [input] and write it to [output]. */
+        fun digestVariable(
+            input: ByteArray,
+            output: ByteArray,
+            create: (Int) -> Result<VariableOutput>,
+        ): Result<Unit> {
+            val hasher =
+                create(output.size).getOrElse {
+                    return Result.failure(InvalidOutputSize())
+                }
+            hasher.update(input)
+            val finalized = hasher.finalizeVariable(output)
+            return if (finalized.isSuccess) {
+                Result.success(Unit)
+            } else {
+                Result.failure(InvalidOutputSize())
+            }
+        }
+    }
 }
 
 /** Trait for variable-size output hash functions able to reset themselves. */
-interface VariableOutputReset : VariableOutput, Reset {
+interface VariableOutputReset :
+    VariableOutput,
+    Reset {
     /** Write the result into [out] and reset state. */
     fun finalizeVariableReset(out: ByteArray): Result<Unit>
+
+    /** Retrieve result into a byte array and reset the hasher state. */
+    fun finalizeBoxedReset(): ByteArray {
+        val buf = ByteArray(outputSize())
+        finalizeVariableReset(buf).getOrThrow()
+        return buf
+    }
 }
 
 /** Error used in variable hash traits. */
