@@ -69,7 +69,7 @@ class CoreWrapper<C>(
     override fun toString(): String {
         val fmt = Formatter()
         (coreImpl as? AlgorithmName)?.writeAlgName(fmt)
-            ?: fmt.writeString(coreImpl::class.simpleName ?: "")
+            ?: fmt.writeString(coreImpl::class.simpleName.orEmpty())
         fmt.writeString(" { .. }")
         return fmt.toString()
     }
